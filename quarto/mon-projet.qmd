@@ -1,0 +1,652 @@
+---
+title: "Analyse statistique des données – EL AMAL"
+subtitle: "Nettoyage + étude statistique (dataStage.xlsx)"
+author: "Oumaima Ayadi"
+lang: fr
+format:
+  revealjs:
+    theme: sky
+    slide-number: true
+    incremental: true
+    transition: fade
+    center: true
+execute:
+  echo: false
+  message: false
+  warning: false
+---
+
+## Année universitaire
+**2024 – 2025**
+
+---
+
+## Plan de présentation
+1. **Introduction** : Contexte & objectifs  
+2. **Données** : Description & structure  
+3. **Nettoyage** : Préparation des données  
+4. **Qualité** : Vérification (NA / doublons)  
+5. **Statistiques** : Analyses descriptives  
+6. **Visualisations** : Graphiques & interprétations  
+7. **Conclusion** : Synthèse & recommandations  
+
+---
+
+## Contexte & objectifs
+
+### Contexte
+- **Société** : EL AMAL (huilerie)  
+- **Source** : Données de production et transactions (Excel)  
+- **Période** : Données historiques de production
+
+### Objectifs
+- Analyser les **quantités** de production (olives, entrées)  
+- Étudier l'évolution des **prix** (unitaire, total)  
+- Identifier les **tendances** temporelles  
+- Produire des **visualisations claires** avec interprétation  
+
+---
+
+## Données utilisées
+
+### Source
+- **Fichier** : `data/dataStage.xlsx`  
+- **Format** : Excel (feuille de calcul)
+
+### Variables principales
+- **Temporelles** : `date_entree` (date d'entrée)  
+- **Quantités** : `qte_olive`, `qte_entree` (quantités d'olives et d'entrées)  
+- **Prix** : `prix_total`, `prix_unitaire` (prix total et unitaire)  
+- **Catégorielles** : `libelle_produit`, `provenance` (produit et origine)
+
+---
+
+## Étape 1 : Chargement & nettoyage
+
+### Opérations effectuées
+1. **Import** des données Excel  
+2. **Nettoyage** des noms de colonnes  
+3. **Conversion** des formats (DT, dates)  
+4. **Création** de variables dérivées
+
+```{r}
+# =============================
+# 0) Packages
+# =============================
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(janitor)
+library(readr)
+
+# =============================
+# 1) Import
+# =============================
+path <- "data/dataStage.xlsx"
+df_raw <- read_excel(path)
+df <- df_raw %>% clean_names()
+
+# =============================
+# 2) Nettoyage
+# =============================
+
+# 2.2 Fonction utilitaire : convertir texte "12 345,6 DT" -> 12345.6
+to_num_dt <- function(x) {
+  x %>%
+    as.character() %>%
+    str_replace_all("DT", "") %>%
+    str_replace_all("\\s+", "") %>%     # enlever espaces (y compris insécables)
+    str_replace_all(",", ".") %>%
+    suppressWarnings(as.numeric())
+}
+
+# 2.3 Nettoyer colonnes numériques si elles existent
+if ("qte_olive" %in% names(df))      df$qte_olive <- to_num_dt(df$qte_olive)
+if ("qte_entree" %in% names(df))     df$qte_entree <- to_num_dt(df$qte_entree)
+if ("prix_unitaire" %in% names(df))  df$prix_unitaire <- to_num_dt(df$prix_unitaire)
+if ("prix_total" %in% names(df))     df$prix_total <- to_num_dt(df$prix_total)
+
+# 2.4 Convertir date
+if ("date_entree" %in% names(df)) {
+  df$date_entree <- parse_date_time(df$date_entree, orders = c("dmy", "ymd")) %>% as.Date()
+}
+
+# 2.5 Convertir colonnes texte en "character"
+cols_text <- intersect(c("n_quitance", "libelle_produit", "unite", "provenance"), names(df))
+df <- df %>% mutate(across(all_of(cols_text), as.character))
+
+# 2.6 Supprimer doublons sur n_quitance (garder plus récent)
+if (all(c("n_quitance", "date_entree") %in% names(df))) {
+  df <- df %>% arrange(date_entree) %>% distinct(n_quitance, .keep_all = TRUE)
+}
+
+# 2.7 Convertir quantités en numérique
+df <- df %>%
+  mutate(
+    qte_olive  = suppressWarnings(as.numeric(qte_olive)),
+    qte_entree = suppressWarnings(as.numeric(qte_entree))
+  )
+
+# 2.8 Créer qte_totale = qte_olive + qte_entree
+if (all(c("qte_olive", "qte_entree") %in% names(df))) {
+  df <- df %>%
+    mutate(qte_totale = coalesce(qte_olive, 0) + coalesce(qte_entree, 0))
+}
+
+# 2.9 Traitement spécial pour prix_total avec parse_number
+if ("prix_total" %in% names(df)) {
+  df <- df %>%
+    mutate(
+      prix_total_raw = as.character(prix_total),
+      prix_total_num = parse_number(
+        prix_total_raw,
+        locale = locale(decimal_mark = ",", grouping_mark = " ")
+      )
+    )
+}
+
+# Dataset pour visualisations (prix_total propre)
+df_plot <- df %>%
+  filter(!is.na(prix_total_num), is.finite(prix_total_num))
+
+cat("Total lignes =", nrow(df), "\n")
+cat("Lignes après filtrage =", nrow(df_plot), "\n")
+```
+
+---
+
+## Étape 2 : Qualité des données
+
+### Vérifications effectuées
+- **Valeurs manquantes** (NA) par variable  
+- **Doublons** dans le dataset  
+- **Cohérence** des données numériques
+
+```{r}
+# Vérification des valeurs manquantes
+na_summary <- df %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "NA_count") %>%
+  filter(NA_count > 0)
+
+if (nrow(na_summary) > 0) {
+  print(na_summary)
+} else {
+  cat("Aucune valeur manquante détectée.\n")
+}
+
+# Vérification des doublons
+doublons <- sum(duplicated(df))
+cat("\nNombre de lignes dupliquées:", doublons, "\n")
+```
+
+---
+
+## Étape 3 : Statistiques descriptives
+
+### Indicateurs calculés
+Pour chaque variable numérique :
+- **Moyenne** et **médiane**  
+- **Écart-type**  
+- **Minimum** et **Maximum**
+
+```{r}
+# Statistiques pour les colonnes numériques
+if (exists("df") && nrow(df) > 0) {
+  num_vars <- df %>%
+    select(where(is.numeric)) %>%
+    names()
+  
+  if (length(num_vars) > 0) {
+    stats <- df %>%
+      select(all_of(num_vars)) %>%
+      summarise(across(everything(), 
+        list(
+          mean = ~mean(.x, na.rm = TRUE),
+          median = ~median(.x, na.rm = TRUE),
+          sd = ~sd(.x, na.rm = TRUE),
+          min = ~min(.x, na.rm = TRUE),
+          max = ~max(.x, na.rm = TRUE)
+        ), .names = "{.col}_{.fn}"
+      ))
+    print(stats)
+  }
+}
+```
+
+---
+
+## Étape 4 : Analyse approfondie - Prix total
+
+### Statistiques du prix total
+Analyse détaillée de la variable `prix_total` :
+- Nombre d'observations  
+- Tendances centrales (moyenne, médiane)  
+- Dispersion (écart-type)  
+- Valeurs extrêmes
+
+```{r}
+# =============================
+# 3) Étude statistique (simple + claire)
+# =============================
+
+# 3.1 Résumé chiffres
+if ("prix_total_num" %in% names(df_plot) && nrow(df_plot) > 0) {
+  stats_prix <- df_plot %>%
+    summarise(
+      nombre = n(),
+      moyenne = mean(prix_total_num),
+      mediane = median(prix_total_num),
+      ecart_type = sd(prix_total_num),
+      minimum = min(prix_total_num),
+      maximum = max(prix_total_num)
+    )
+  print(stats_prix)
+}
+```
+
+---
+
+## Visualisation 1 : Distribution du prix total
+
+### Scatter plot (nuage de points)
+Visualisation de la **distribution** des prix totaux  
+Permet d'identifier les **valeurs aberrantes** et la **dispersion**
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("prix_total_num" %in% names(df_plot) && nrow(df_plot) > 0) {
+  ggplot(df_plot, aes(y = prix_total_num)) +
+    geom_boxplot(fill = "#4CAF50", alpha = 0.7) +
+    labs(
+      title = "Distribution du prix total",
+      y = "Prix total"
+    ) +
+    theme_minimal(base_size = 14)
+}
+```
+
+---
+
+## Visualisation 2 : Répartition du prix total
+
+### Histogramme avec moyenne
+Visualisation de la **distribution** des fréquences  
+**Ligne rouge** = moyenne pour référence
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("prix_total_num" %in% names(df_plot) && nrow(df_plot) > 0) {
+  moy <- mean(df_plot$prix_total_num)
+  
+  ggplot(df_plot, aes(x = prix_total_num)) +
+    geom_histogram(bins = 30, fill = "#2196F3", alpha = 0.7) +
+    geom_vline(xintercept = moy, color = "red", linewidth = 1) +
+    labs(
+      title = "Répartition du prix total",
+      subtitle = "Ligne rouge = moyenne",
+      x = "Prix total",
+      y = "Fréquence"
+    ) +
+    theme_minimal(base_size = 14)
+}
+```
+
+---
+
+## Visualisation 3 : Distribution (Zoom 95%)
+
+### Box plot avec zoom
+Visualisation de la **distribution centrale** (95% des données)  
+Permet d'analyser la **médiane** et les **quartiles** sans les valeurs extrêmes
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("prix_total_num" %in% names(df_plot) && nrow(df_plot) > 0) {
+  p95 <- quantile(df_plot$prix_total_num, 0.95)
+  
+  ggplot(df_plot, aes(y = prix_total_num)) +
+    geom_boxplot(fill = "#4CAF50", alpha = 0.7, outlier.alpha = 0.2) +
+    coord_cartesian(ylim = c(0, p95)) +
+    labs(
+      title = "Distribution du prix total (zoom 95 %)",
+      y = "Prix total"
+    ) +
+    theme_minimal(base_size = 14)
+}
+```
+
+---
+
+## Visualisation 4 : Répartition (Échelle logarithmique)
+
+### Histogramme en échelle log
+Visualisation adaptée aux données **asymétriques**  
+Permet de mieux voir la distribution sur une large plage de valeurs
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("prix_total_num" %in% names(df_plot) && nrow(df_plot) > 0 && sum(df_plot$prix_total_num > 0, na.rm = TRUE) > 0) {
+  ggplot(df_plot %>% filter(prix_total_num > 0), aes(x = prix_total_num)) +
+    geom_histogram(bins = 40, fill = "#2196F3", alpha = 0.7) +
+    scale_x_log10() +
+    labs(
+      title = "Répartition du prix total (échelle logarithmique)",
+      x = "Prix total (log10)",
+      y = "Fréquence"
+    ) +
+    theme_minimal(base_size = 14)
+}
+```
+
+---
+
+## Visualisation 5 : Évolution temporelle des prix
+
+### Prix moyen mensuel
+Analyse de l'**évolution** du prix moyen par mois  
+Identification des **tendances** et **saisonnalités**
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("date_entree" %in% names(df_plot) && "prix_total_num" %in% names(df_plot) && nrow(df_plot) > 0) {
+  df_month <- df_plot %>%
+    filter(!is.na(date_entree)) %>%
+    mutate(mois = floor_date(date_entree, "month")) %>%
+    group_by(mois) %>%
+    summarise(prix_moyen = mean(prix_total_num, na.rm = TRUE)) %>%
+    arrange(mois)
+  
+  if (nrow(df_month) > 0) {
+    ggplot(df_month, aes(x = mois, y = prix_moyen)) +
+      geom_line(color = "#1565C0", linewidth = 1.2) +
+      geom_point(color = "#1565C0", size = 2) +
+      labs(
+        title = "Évolution du prix moyen mensuel",
+        x = "Temps (mois)",
+        y = "Prix moyen"
+      ) +
+      theme_minimal(base_size = 14)
+  }
+}
+```
+
+---
+
+## Visualisation 6 : Analyse par produit
+
+### Distribution des prix (Top 5 produits)
+Comparaison des **prix** entre les **5 produits les plus fréquents**  
+Identification des **différences** de prix entre produits
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("libelle_produit" %in% names(df_plot) && "prix_total_num" %in% names(df_plot) && nrow(df_plot) > 0) {
+  top_produits <- df_plot %>%
+    filter(!is.na(libelle_produit)) %>%
+    count(libelle_produit, sort = TRUE) %>%
+    slice_head(n = 5) %>%
+    pull(libelle_produit)
+  
+  if (length(top_produits) > 0) {
+    df_prod <- df_plot %>%
+      filter(libelle_produit %in% top_produits)
+    
+    p95_prod <- quantile(df_prod$prix_total_num, 0.95, na.rm = TRUE)
+    
+    ggplot(df_prod, aes(
+      y = reorder(libelle_produit, prix_total_num, FUN = median),
+      x = prix_total_num
+    )) +
+      geom_boxplot(fill = "#8E24AA", alpha = 0.7, outlier.alpha = 0.2) +
+      coord_cartesian(xlim = c(0, p95_prod)) +
+      labs(
+        title = "Distribution du prix total par produit (Top 5)",
+        subtitle = "Produits les plus fréquents",
+        y = "Produit",
+        x = "Prix total"
+      ) +
+      theme_minimal(base_size = 14) +
+      theme(
+        axis.text.y = element_text(size = 12),
+        plot.margin = margin(10, 40, 10, 10)
+      )
+  }
+}
+```
+
+---
+
+## Visualisation 7 : Relation quantité/prix
+
+### Scatter plot avec régression linéaire
+Analyse de la **corrélation** entre quantité et prix  
+**Ligne noire** = tendance linéaire (régression)
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("qte_totale" %in% names(df_plot) && "prix_total_num" %in% names(df_plot) && nrow(df_plot) > 0) {
+  df_relation <- df_plot %>%
+    filter(!is.na(qte_totale))
+  
+  if (nrow(df_relation) > 0) {
+    ggplot(df_relation, aes(x = qte_totale, y = prix_total_num)) +
+      geom_point(alpha = 0.4, color = "#D81B60") +
+      geom_smooth(method = "lm", se = FALSE, color = "black") +
+      labs(
+        title = "Relation entre quantité totale et prix total",
+        x = "Quantité totale",
+        y = "Prix total"
+      ) +
+      theme_minimal(base_size = 14)
+  }
+}
+```
+
+---
+
+## Visualisation 8 : Évolution des quantités
+
+### Série temporelle des quantités
+Analyse de l'**évolution** des quantités totales dans le temps  
+Identification des **périodes** de forte/faible production
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("date_entree" %in% names(df) && "qte_totale" %in% names(df) && nrow(df) > 0) {
+  df_qte <- df %>%
+    filter(!is.na(date_entree), !is.na(qte_totale)) %>%
+    arrange(date_entree)
+  
+  if (nrow(df_qte) > 0) {
+    ggplot(df_qte, aes(x = date_entree, y = qte_totale)) +
+      geom_line(color = "#1565C0", linewidth = 1.2) +
+      geom_point(color = "#1565C0", size = 2, alpha = 0.6) +
+      labs(
+        title = "Évolution de la quantité totale dans le temps",
+        x = "Date d'entrée",
+        y = "Quantité totale"
+      ) +
+      theme_minimal(base_size = 14)
+  }
+}
+```
+
+---
+
+## Visualisation 9 : Évolution des prix totaux
+
+### Série temporelle des prix
+Analyse de l'**évolution** des prix totaux dans le temps  
+Identification des **tendances** de prix
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("date_entree" %in% names(df_plot) && "prix_total_num" %in% names(df_plot) && nrow(df_plot) > 0) {
+  df_prix_temps <- df_plot %>%
+    filter(!is.na(date_entree), !is.na(prix_total_num)) %>%
+    arrange(date_entree)
+  
+  if (nrow(df_prix_temps) > 0) {
+    ggplot(df_prix_temps, aes(x = date_entree, y = prix_total_num)) +
+      geom_line(color = "#1565C0", linewidth = 1.2) +
+      geom_point(color = "#1565C0", size = 2, alpha = 0.6) +
+      labs(
+        title = "Évolution du prix total dans le temps",
+        x = "Date d'entrée",
+        y = "Prix total"
+      ) +
+      theme_minimal(base_size = 14)
+  }
+}
+```
+
+---
+
+## Visualisation 10 : Distribution générale des prix
+
+### Histogramme des prix
+Vue d'ensemble de la **distribution** des prix totaux  
+Identification de la **forme** de la distribution
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("prix_total_num" %in% names(df_plot) && nrow(df_plot) > 0) {
+  ggplot(df_plot, aes(x = prix_total_num)) +
+    geom_histogram(bins = 30, fill = "#2196F3", alpha = 0.7) +
+    labs(
+      title = "Distribution du prix total",
+      x = "Prix total",
+      y = "Fréquence"
+    ) +
+    theme_minimal(base_size = 14)
+}
+```
+
+---
+
+## Visualisation 11 : Quantités par produit
+
+### Barres horizontales
+Comparaison des **quantités moyennes** par produit  
+Identification des produits les plus **produits**
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("libelle_produit" %in% names(df) && "qte_totale" %in% names(df) && nrow(df) > 0) {
+  df_prod_qte <- df %>%
+    filter(!is.na(libelle_produit), !is.na(qte_totale)) %>%
+    group_by(libelle_produit) %>%
+    summarise(qte_moyenne = mean(qte_totale, na.rm = TRUE), .groups = "drop")
+  
+  if (nrow(df_prod_qte) > 0) {
+    ggplot(df_prod_qte, aes(x = reorder(libelle_produit, qte_moyenne), y = qte_moyenne)) +
+      geom_col(fill = "#4CAF50", alpha = 0.8) +
+      coord_flip() +
+      labs(
+        title = "Quantité moyenne par produit",
+        x = "Produit",
+        y = "Quantité moyenne"
+      ) +
+      theme_minimal(base_size = 14)
+  }
+}
+```
+
+---
+
+## Visualisation 12 : Relation prix/quantité (détaillée)
+
+### Scatter plot avec intervalle de confiance
+Analyse approfondie de la **relation** quantité/prix  
+**Zone grise** = intervalle de confiance de la régression
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+if ("qte_totale" %in% names(df_plot) && "prix_total_num" %in% names(df_plot) && nrow(df_plot) > 0) {
+  df_relation5 <- df_plot %>%
+    filter(!is.na(qte_totale), !is.na(prix_total_num))
+  
+  if (nrow(df_relation5) > 0) {
+    ggplot(df_relation5, aes(x = qte_totale, y = prix_total_num)) +
+      geom_point(alpha = 0.4, color = "#D81B60") +
+      geom_smooth(method = "lm", se = TRUE, color = "black", fill = "grey70", alpha = 0.3) +
+      labs(
+        title = "Relation entre quantité totale et prix total",
+        subtitle = "Zone grise = intervalle de confiance à 95%",
+        x = "Quantité totale",
+        y = "Prix total"
+      ) +
+      theme_minimal(base_size = 14)
+  }
+}
+```
+
+---
+
+## Synthèse des résultats
+
+### Points clés identifiés
+- **Nettoyage** : Conversion réussie des formats (DT, dates)  
+- **Qualité** : Données vérifiées (NA, doublons)  
+- **Statistiques** : Indicateurs descriptifs calculés  
+- **Visualisations** : 12 graphiques produits pour l'analyse
+
+---
+
+## Interprétations principales
+
+### Distribution des prix
+- Distribution **asymétrique** (beaucoup de petits prix, quelques très grands)  
+- Présence de **valeurs aberrantes** à traiter  
+- Prix moyen vs médiane : indicateur d'**asymétrie**
+
+### Évolution temporelle
+- **Tendances** identifiables dans les séries temporelles  
+- **Saisonnalité** possible à analyser plus en détail  
+- **Corrélation** entre quantité et prix observée
+
+---
+
+## Conclusion & recommandations
+
+### Réalisations
+ **Nettoyage complet** des données effectué  
+**Statistiques descriptives** calculées  
+ **Visualisations** claires et interprétables produites  
+ **Relations** entre variables identifiées
+
+### Recommandations
+1. **Traitement des valeurs aberrantes** : Examiner les prix très élevés  
+2. **Analyse de saisonnalité** : Étudier les variations mensuelles/annuelles  
+3. **Segmentation par produit** : Approfondir l'analyse par type de produit  
+4. **Modélisation** : Développer des modèles prédictifs si nécessaire
+
+### Perspectives
+- Analyse de **régression** plus poussée  
+- **Tests statistiques** (normalité, corrélations)  
+- **Clustering** des produits par prix/quantité
