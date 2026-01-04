@@ -38,6 +38,8 @@ EL AMAL HUILERIE.
 - `data/` : données brutes et nettoyées
 - `notebooks/` : notebook Google Colab
 - `quarto/` : présentation Quarto
-- `slides/` : support de présentation
+- `slides/` : support de 
 
+   **Ouvrir le notebook Google Colab**  
+https://colab.research.google.com/drive/1VHH7CtMaR1mOiruJu1D5KHenR7ZPK0zM?usp=sharing
 
