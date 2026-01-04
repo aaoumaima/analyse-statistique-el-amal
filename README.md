@@ -40,6 +40,4 @@ EL AMAL HUILERIE.
 - `quarto/` : présentation Quarto
 - `slides/` : support de présentation
 
-## 👩‍🎓 Réalisé par
-Nom Prénom  
-Année universitaire 2024–2025
+
